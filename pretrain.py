@@ -201,13 +201,13 @@ def train(scaler, train_loader, model, criterion, optimizer, epoch, args):
             vac = vac_i + 0.5 * (vac_t + vac_s)
 
             # cross correlation = Invariance + Reudce Redundancy
-            # xcorr_t = cal_xc(z_t_list)
-            # xcorr_s = cal_xc(z_s_list)
-            # xcorr_i = cal_xc(z_i_list)
-            xcorr = torch.tensor(0).cuda() #xcorr_i + 0.5 * (xcorr_s + xcorr_t) 
+            xcorr_t = cal_xc(z_t_list)
+            xcorr_s = cal_xc(z_s_list)
+            xcorr_i = cal_xc(z_i_list)
+            xcorr = xcorr_i + 0.5 * (xcorr_s + xcorr_t) 
 
             # Total loss, Multi-Grained Feature Decorrelation
-            loss = sim * ws['sim'] + vac * ws['vac'] # + xcorr * ws['xcorr']
+            loss = sim * ws['sim'] + vac * ws['vac'] + xcorr * ws['xcorr']
             if loss > 1e4 or torch.isnan(loss).any() or torch.isinf(loss).any():
                 print(f'{loss} Model collapse, Exit 0')
                 exit(0)
@@ -273,7 +273,7 @@ if __name__ == '__main__':
     ws = {
         'sim': 5,
         'vac': 1.,
-        'xcorr': 0, # 1e-3
+        'xcorr': 1e-3
         }
     args = parser.parse_args()
     loss_rcd= {}
