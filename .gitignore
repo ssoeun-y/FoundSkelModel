@@ -5,3 +5,7 @@ results/
 *.npy
 *.pth
 *.pth.tar
+__pycache__/
+*.pyc
+=4.35.0
+*.bak
