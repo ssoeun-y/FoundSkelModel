@@ -1,0 +1,7 @@
+data/
+checkpoint/
+results/
+*.pkl
+*.npy
+*.pth
+*.pth.tar
