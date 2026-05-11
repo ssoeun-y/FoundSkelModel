@@ -109,9 +109,9 @@ mAPa / mAPv (theta=0.5):
 
 | 방법 | mAP@0.1 | mAP@0.3 | mAP@0.5 | mAP@0.7 | 비고 |
 |------|---------|---------|---------|---------|------|
-| CausalDSTE v1 (leaky) | 0.791 | 0.751 | 0.640 | 0.423 | 정보 누수 |
+| CausalDSTE v1 (leaky) | 0.791 | 0.751 | 0.640 | 0.423 | 정보 leaky |
 | CausalDSTE v2 (strict) | 0.821 | 0.780 | 0.661 | 0.415 | 완전 causal |
-| CausalDSTEAux v1 (leaky) + Phase2 | 0.872 | 0.842 | 0.765 | 0.554 | 누수로 공정하지 않음 |
+| CausalDSTEAux v1 (leaky) + Phase2 | 0.872 | 0.842 | 0.765 | 0.554 |  |
 | CausalDSTEAux v3 (strict) | 0.818 | 0.774 | 0.664 | 0.433 | online baseline |
 | CausalDSTEAux v3 + Phase2 | 0.844 | 0.807 | 0.712 | 0.500 | online best |
 
