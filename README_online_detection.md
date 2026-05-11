@@ -127,13 +127,7 @@ mAPa / mAPv (theta=0.5):
 | AFCM v2 | k=[5,10,15], lam=1.0 | - | loss 폭발 |
 | AFCM + offline distill | cosine, lam=0.5 | 71.3% | 동일 수준 |
 
-결론: AFCM 유의미한 개선 없음 -> Mamba 기반으로 전환
-
-### 5단계: Mamba 기반 (진행 중)
-
-- 설계: backbone -> y_t [B,T,H] -> MambaTemporalRefiner -> y_t_refined [B,T,H]
-- pretrained weight 100% 호환, shape 변경 없음
-- 구현 및 실험 진행 중
+결론: AFCM 유의미한 개선 없음 
 
 ---
 
