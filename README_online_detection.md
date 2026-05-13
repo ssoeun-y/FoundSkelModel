@@ -140,6 +140,8 @@ mAPa / mAPv (theta=0.5):
 | CausalDSTEAux (online) | 65.1% | 64.1% |
 | CausalDSTEAux + Phase 2 (online best) | 71.9% | 71.7% |
 
+방법mAP@0.5mAP@0.7CausalDSTEAux + Phase2 (online best)71.2%50.0%CausalDSTEError + Phase2 (Step 1)71.7%50.9%
+
 ---
 
 ## 학습 명령어
@@ -168,9 +170,28 @@ python scripts/generate_bbox_phase2.py \
 python scripts/eval_perframe_mAP.py \
   --src results/<exp>/detect_each_frame \
   --gt  scripts/V1_Label
+
+bash# CausalDSTEError (Step 1)
+python action_detection.py --backbone CausalDSTEError --moda joint \
+  --pretrained ./checkpoint/ntu60_xs_j_dste/ntu60_xs_joint_dste.pth.tar \
+  --finetune-dataset pku_v1 --protocol cross_subject \
+  --lr 0.005 --batch-size 256 --lam 1.0 --sigma 2.0 --tag causal_dste_error_step1
+---
 ```
 
----
+5단계: Online 성능 개선 - Latent Causal Error Signal (진행 중)
+아이디어: 인접 프레임 간 feature 차이(E_t = ||z_t - z_{t-1}||²)를 boundary signal로 사용. E_t가 커지는 순간을 action transition의 증거로 보고 start/end head에 반영.
+방법mAP@0.1mAP@0.3mAP@0.5mAP@0.7비고CausalDSTEAux + Phase2 (baseline)0.8440.8070.7120.500online bestCausalDSTEError + Phase2 (ep124)0.8450.8110.7170.509Step 1 결과
+mAP@0.7 향상폭(+0.9%p)이 @0.5(+0.5%p)보다 크게 나타남 → E_t signal이 boundary precision을 직접 개선한다는 증거. 추가 파라미터 scalar 2개(e_gate_start, e_gate_end)만으로 달성.
+진행 예정:
+
+Step 2: 단순 frame diff 대신 Predictor 모듈로 ẑ_t 예측 → E_t = ||ẑ_t - z_t||² (신호 품질 향상)
+Step 3: E_t spike 시 DSTE attention mask를 동적으로 조정 → temporal update rule 변경
+
+
+3. 추가된 파일 
+파일설명DSTE_causal_error.pyDownstreamCausalError: CausalDSTEAux + FrameDiffErrorModule. E_t = `
+
 
 ## 환경
 Python 3.8 | PyTorch 2.0.0+cu118 | CUDA 11.8 | GPU 4x
