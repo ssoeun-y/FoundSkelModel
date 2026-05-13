@@ -32,15 +32,12 @@ parser.add_argument('--finetune-dataset', default='ntu60', type=str)
 parser.add_argument('--protocol', default='cross_view', type=str)
 parser.add_argument('--moda', default='joint', type=str)
 parser.add_argument('--backbone', default='DSTE', type=str,
-                    help='DSTE, STTR, GAT, TSM, BoundaryReg, DSTEAux, CausalDSTEAux, CausalDSTEAFCM, BSDSTE, BSv2, STFM, or CDED')
+                    help='DSTE, STTR, GAT, TSM, BoundaryReg, DSTEAux, CausalDSTEAux, CausalDSTEError, CausalDSTEAFCM, BSDSTE, BSv2, STFM, or CDED')
 parser.add_argument('--tag', default='', type=str)
 parser.add_argument('--lam', default=1.0, type=float)
 parser.add_argument('--lam-future', default=0.1, type=float,
                     help='CausalDSTEAFCM: future prediction loss weight')
-parser.add_argument('--lam-distill', default=0.5, type=float,
-                    help='CausalDSTEAFCM: feature distillation loss weight')
-parser.add_argument('--teacher-ckpt', default='', type=str,
-                    help='CausalDSTEAFCM: offline teacher checkpoint path')
+parser.add_argument('--lam-gate', default=0.5, type=float, help='CausalDSTEGate: background gate loss weight')
 parser.add_argument('--snap-k', default=3, type=int)
 parser.add_argument('--sigma', default=2.0, type=float)
 parser.add_argument('--field-k', default=20.0, type=float)
@@ -66,7 +63,10 @@ def load_pretrained(pretrained, model):
         print(set(msg.missing_keys))
         print("=> loaded pre-trained model '{}'".format(pretrained))
     else:
-        print("=> no checkpoint found at '{}'".format(pretrained))
+        raise FileNotFoundError(
+            "pretrained checkpoint not found: '{}'. "
+            "Refusing to train from random initialization.".format(pretrained)
+        )
 
 
 def load_detector(detector, model):
@@ -86,8 +86,15 @@ def main():
     args = parser.parse_args()
     torch.backends.cuda.enable_flash_sdp(False)
     torch.backends.cuda.enable_mem_efficient_sdp(False)
-    if 'pth' not in args.evaluate and not os.path.exists(args.pretrained):
-        print(args.pretrained, ' not found!')
+    if (
+        args.evaluate in ['false', 'False', 'none', 'None']
+        and args.pretrained
+        and not os.path.exists(args.pretrained)
+    ):
+        raise FileNotFoundError(
+            "pretrained checkpoint not found: '{}'. "
+            "Check the path relative to your current working directory.".format(args.pretrained)
+        )
     print(type(args.evaluate), args.evaluate)
     if args.evaluate not in ['false', 'False', 'none', 'None']:
         pass
@@ -127,6 +134,12 @@ def main_worker(args):
     elif args.backbone == 'CausalDSTEAux':
         from model.DSTE_causal_aux import DownstreamCausalAux
         model = DownstreamCausalAux(**opts.encoder_args)
+    elif args.backbone == 'CausalDSTEError':
+        from model.DSTE_causal_error import DownstreamCausalError
+        model = DownstreamCausalError(**opts.encoder_args)
+    elif args.backbone == 'CausalDSTEGate':
+        from model.DSTE_causal_gate import DownstreamCausalGate
+        model = DownstreamCausalGate(**opts.encoder_args)
     elif args.backbone == 'CausalDSTEAFCM':
         from model.DSTE_causal_afcm import DownstreamCausalAFCM
         model = DownstreamCausalAFCM(**opts.encoder_args, lam_future=args.lam_future)
@@ -161,13 +174,16 @@ def main_worker(args):
         nn.init.zeros_(model.end_head.bias)
         nn.init.dirac_(model.cls_conv.weight)
         nn.init.dirac_(model.reg_conv.weight)
-    elif args.backbone in ('DSTEAux', 'CausalDSTEAux', 'CausalDSTEAFCM'):
+    elif args.backbone in ('DSTEAux', 'CausalDSTEAux', 'CausalDSTEError', 'CausalDSTEAFCM', 'CausalDSTEGate'):
         model.fc.weight.data.normal_(mean=0.0, std=0.01)
         model.fc.bias.data.zero_()
         nn.init.xavier_uniform_(model.start_head.weight)
         nn.init.zeros_(model.start_head.bias)
         nn.init.xavier_uniform_(model.end_head.weight)
         nn.init.zeros_(model.end_head.bias)
+        if hasattr(model, 'fc_proj'):
+            nn.init.xavier_uniform_(model.fc_proj.weight)
+            nn.init.zeros_(model.fc_proj.bias)
     elif args.backbone == 'BSDSTE':
         nn.init.normal_(model.cls_head.weight, mean=0.0, std=0.01)
         nn.init.zeros_(model.cls_head.bias)
@@ -209,21 +225,6 @@ def main_worker(args):
     model = model.cuda()
     criterion = nn.CrossEntropyLoss().cuda()
 
-    # ── Teacher 모델 로드 (CausalDSTEAFCM + feature distillation) ────
-    teacher_model = None
-    if args.backbone == 'CausalDSTEAFCM' and args.teacher_ckpt:
-        from model.DSTE_aux import DownstreamAux
-        from model.DSTE_causal_afcm import TeacherWrapper
-        _teacher = DownstreamAux(**opts.encoder_args)
-        _ckpt = torch.load(args.teacher_ckpt, map_location='cpu')
-        _sd = _ckpt['state_dict']
-        from tools import remove_prefix
-        _sd = remove_prefix(_sd)
-        _teacher.load_state_dict(_sd, strict=True)
-        teacher_model = TeacherWrapper(_teacher).cuda()
-        teacher_model.eval()
-        print(f'[teacher] loaded: {args.teacher_ckpt}')
-
     fc_parameters = []
     other_parameters = []
     for name, param in model.named_parameters():
@@ -231,8 +232,11 @@ def main_worker(args):
             args.backbone == 'BoundaryReg' and
             any(name.startswith(f'module.{h}') for h in ['cls_head', 'start_head', 'end_head'])
         ) or (
-            args.backbone in ('DSTEAux', 'CausalDSTEAux') and
-            any(name.startswith(f'module.{h}') for h in ['start_head', 'end_head'])
+            args.backbone in ('DSTEAux', 'CausalDSTEAux', 'CausalDSTEError') and
+            any(name.startswith(f'module.{h}') for h in ['start_head', 'end_head', 'e_gate_start', 'e_gate_end'])
+        ) or (
+            args.backbone == 'CausalDSTEGate' and
+            any(name.startswith(f'module.{h}') for h in ['start_head', 'end_head', 'gate_head'])
         ) or (
             args.backbone == 'CausalDSTEAFCM' and
             any(name.startswith(f'module.{h}') for h in ['start_head', 'end_head', 'afcm'])
@@ -289,7 +293,7 @@ def main_worker(args):
                 generate_bbox(val_loader, model, args, save_dir=save_dir)
             break
         adjust_learning_rate(optimizer, epoch, args)
-        train(train_loader, model, criterion, optimizer, epoch, args, teacher_model=teacher_model)
+        train(train_loader, model, criterion, optimizer, epoch, args)
         if (epoch + 1) % 5 == 0:
             state = {'state_dict': model.state_dict()}
             torch.save(state, os.path.join(save_dir, f'epoch{epoch}_detection.pth.tar'))
@@ -318,7 +322,7 @@ def _build_boundary_gt(target, sigma):
     return start_gt, end_gt
 
 
-def train(train_loader, model, criterion, optimizer, epoch, args, teacher_model=None):
+def train(train_loader, model, criterion, optimizer, epoch, args):
     batch_time = AverageMeter('Time', ':6.3f')
     data_time = AverageMeter('Data', ':6.3f')
     losses = AverageMeter('Loss', ':1.4f')
@@ -344,15 +348,8 @@ def train(train_loader, model, criterion, optimizer, epoch, args, teacher_model=
 
         # ── forward ───────────────────────────────────────────────────
         if args.backbone == 'CausalDSTEAFCM':
-            # teacher feature 추출 (no_grad, frozen)
-            if teacher_model is not None:
-                teacher_yt = teacher_model.get_feature(
-                    jt, js, bt, bs, mt, ms, modality=args.moda)
-            else:
-                teacher_yt = None
             output = model(jt, js, bt, bs, mt, ms, knn_eval=False, detect=True,
-                           compute_future_loss=(teacher_yt is not None),
-                           teacher_y_t=teacher_yt)
+                           compute_future_loss=True)
         else:
             output = model(jt, js, bt, bs, mt, ms, knn_eval=False, detect=True)
 
@@ -377,7 +374,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args, teacher_model=
             output = cls_logits.reshape(-1, cls_logits.size(-1))
             target = target.reshape(-1)
 
-        elif args.backbone in ('DSTEAux', 'CausalDSTEAux'):
+        elif args.backbone in ('DSTEAux', 'CausalDSTEAux', 'CausalDSTEError'):
             cls_logits, start_logits, end_logits = output
             start_gt, end_gt = _build_boundary_gt(target, args.sigma)
             loss_cls = criterion(cls_logits.reshape(-1, cls_logits.size(-1)), target.reshape(-1))
@@ -387,21 +384,25 @@ def train(train_loader, model, criterion, optimizer, epoch, args, teacher_model=
             output = cls_logits.reshape(-1, cls_logits.size(-1))
             target = target.reshape(-1)
 
-        elif args.backbone == 'CausalDSTEAFCM':
+        elif args.backbone == 'CausalDSTEGate':
+            cls_logits, start_logits, end_logits, gate = output
             start_gt, end_gt = _build_boundary_gt(target, args.sigma)
-            if len(output) == 4:
-                cls_logits, start_logits, end_logits, L_distill = output
-                loss_cls   = criterion(cls_logits.reshape(-1, cls_logits.size(-1)), target.reshape(-1))
-                loss_start = F.binary_cross_entropy_with_logits(start_logits.squeeze(-1), start_gt)
-                loss_end   = F.binary_cross_entropy_with_logits(end_logits.squeeze(-1), end_gt)
-                loss = (loss_cls + args.lam * (loss_start + loss_end)
-                        + args.lam_distill * L_distill.mean())
-            else:
-                cls_logits, start_logits, end_logits = output
-                loss_cls   = criterion(cls_logits.reshape(-1, cls_logits.size(-1)), target.reshape(-1))
-                loss_start = F.binary_cross_entropy_with_logits(start_logits.squeeze(-1), start_gt)
-                loss_end   = F.binary_cross_entropy_with_logits(end_logits.squeeze(-1), end_gt)
-                loss = loss_cls + args.lam * (loss_start + loss_end)
+            action_mask = (target > 0).float()
+            loss_cls   = criterion(cls_logits.reshape(-1, cls_logits.size(-1)), target.reshape(-1))
+            loss_start = F.binary_cross_entropy_with_logits(start_logits.squeeze(-1), start_gt)
+            loss_end   = F.binary_cross_entropy_with_logits(end_logits.squeeze(-1), end_gt)
+            loss_gate  = F.binary_cross_entropy(gate.squeeze(-1), action_mask)
+            loss = (loss_cls + args.lam * (loss_start + loss_end) + args.lam_gate * loss_gate)
+            output = cls_logits.reshape(-1, cls_logits.size(-1))
+            target = target.reshape(-1)
+        elif args.backbone == 'CausalDSTEAFCM':
+            cls_logits, start_logits, end_logits, L_future = output
+            start_gt, end_gt = _build_boundary_gt(target, args.sigma)
+            loss_cls = criterion(cls_logits.reshape(-1, cls_logits.size(-1)), target.reshape(-1))
+            loss_start = F.binary_cross_entropy_with_logits(start_logits.squeeze(-1), start_gt)
+            loss_end = F.binary_cross_entropy_with_logits(end_logits.squeeze(-1), end_gt)
+            loss = (loss_cls + args.lam * (loss_start + loss_end)
+                    + args.lam_future * L_future.mean())
             output = cls_logits.reshape(-1, cls_logits.size(-1))
             target = target.reshape(-1)
 
@@ -535,8 +536,8 @@ def validate(val_loader, model, criterion, args):
             ms = ms.float().cuda(non_blocking=True)
             target = target.long().cuda(non_blocking=True)
             output = model(jt, js, bt, bs, mt, ms, knn_eval=False, detect=True)
-            if args.backbone in ('BoundaryReg', 'DSTEAux', 'CausalDSTEAux',
-                                  'CausalDSTEAFCM', 'BSDSTE', 'BSv2', 'STFM', 'CDED'):
+            if args.backbone in ('BoundaryReg', 'DSTEAux', 'CausalDSTEAux', 'CausalDSTEError',
+                                  'CausalDSTEAFCM', 'CausalDSTEGate', 'BSDSTE', 'BSv2', 'STFM', 'CDED'):
                 cls_logits = output[0]
                 output = cls_logits.reshape(-1, cls_logits.size(-1))
             else:
@@ -583,7 +584,7 @@ def generate_bbox(val_loader, model, args, thereshold=0.02, save_dir=None):
             start_score = torch.sigmoid(start_logits.squeeze(-1))
             end_score = torch.sigmoid(end_logits.squeeze(-1))
             output = F.softmax(cls_logits, dim=-1)
-        elif args.backbone in ('DSTEAux', 'CausalDSTEAux', 'CausalDSTEAFCM', 'BSDSTE'):
+        elif args.backbone in ('DSTEAux', 'CausalDSTEAux', 'CausalDSTEError', 'CausalDSTEAFCM', 'CausalDSTEGate', 'BSDSTE'):
             cls_logits, start_logits, end_logits = raw[0], raw[1], raw[2]
             start_score = torch.sigmoid(start_logits.squeeze(-1))
             end_score = torch.sigmoid(end_logits.squeeze(-1))
@@ -622,8 +623,8 @@ def generate_bbox(val_loader, model, args, thereshold=0.02, save_dir=None):
                     de = loc_pred[idx, :, 1].unsqueeze(1)
                     results = torch.cat(
                         (pred_fs.unsqueeze(1), gt_bs.unsqueeze(1), pred_bs, ss, es, ds, de), dim=1)
-                elif args.backbone in ('BoundaryReg', 'DSTEAux', 'CausalDSTEAux',
-                                       'CausalDSTEAFCM', 'BSDSTE', 'BSv2', 'STFM'):
+                elif args.backbone in ('BoundaryReg', 'DSTEAux', 'CausalDSTEAux', 'CausalDSTEError',
+                                       'CausalDSTEAFCM', 'CausalDSTEGate', 'BSDSTE', 'BSv2', 'STFM'):
                     ss = start_score[idx].unsqueeze(1)
                     es = end_score[idx].unsqueeze(1)
                     results = torch.cat(
