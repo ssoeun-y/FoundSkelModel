@@ -112,6 +112,46 @@ def make_proposals(data, alpha, threshold, snap_k=0, use_loc=False):
 
     return proposals
 
+from scipy.signal import find_peaks
+
+def make_proposals_phase3(data, threshold_cls, min_action_len=10, max_action_len=200,
+                           peak_distance=5, peak_prominence=0.01, alpha=0.4):
+    cls_prob     = data[:, 2:54]
+    start_scores = data[:, 54]
+    end_scores   = data[:, 55]
+
+    s_peaks, _ = find_peaks(start_scores, distance=peak_distance, prominence=peak_prominence)
+    e_peaks, _ = find_peaks(end_scores,   distance=peak_distance, prominence=peak_prominence)
+
+    # ── 더블체킹: 루프 전에 찍어야 폭발 여부 미리 확인 가능 ──
+    print(f"s_peaks: {len(s_peaks)}, e_peaks: {len(e_peaks)}, "
+          f"max combinations: {len(s_peaks) * len(e_peaks)}")
+    print(f"start_scores  min={start_scores.min():.4f} "
+          f"max={start_scores.max():.4f} mean={start_scores.mean():.4f}")
+    print(f"end_scores    min={end_scores.min():.4f}   "
+          f"max={end_scores.max():.4f}   mean={end_scores.mean():.4f}")
+
+    proposals = []
+    for t_s in s_peaks:
+        for t_e in e_peaks:
+            duration = t_e - t_s
+            if duration < min_action_len or duration > max_action_len:
+                continue
+
+            interior_cls = cls_prob[t_s:t_e].mean(axis=0)
+            cls_idx  = int(np.argmax(interior_cls[1:]) + 1)
+            cls_score = float(interior_cls[cls_idx])
+            if cls_score < threshold_cls:
+                continue
+
+            # t_e는 exclusive → end_scores[t_e - 1]  ← Phase 2 방식과 동일
+            bnd_score = float(start_scores[t_s]) * float(end_scores[t_e - 1])
+            score = (cls_score ** (1 - alpha)) * ((bnd_score + 1e-8) ** alpha)
+            proposals.append([cls_idx, t_s, t_e, score])
+
+    print(f"proposals generated: {len(proposals)}")
+    return proposals
+
 
 # ── Soft-NMS (Gaussian decay) ─────────────────────────────────────────────────
 

@@ -18,7 +18,7 @@ print('src_folder: ', source_folder)
 print('gt_folder: ', ground_folder)
 
 fig_folder = '.'
-theta = 0.5  # overlap ratio
+theta = float(os.getenv("THETA", "0.5"))  # overlap ratio
 number_label = 52
 
 

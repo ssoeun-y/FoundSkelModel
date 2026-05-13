@@ -1,6 +1,6 @@
-root_path = "./data"
-root_path = "/data/wwj_bkup/UmURL0711/data/"
-root_path = "/data/wwj/UmURL0711/data/"
+root_path = "./data/"
+##root_path = "/data/wwj_bkup/UmURL0711/data/"
+##root_path = "/data/wwj/UmURL0711/data/"
 
 
 
@@ -191,7 +191,7 @@ class opts_pku_v2_xsub():
     self.encoder_args = {
     "t_input_size":150,
     "s_input_size":192,
-    "hidden_size":1024,
+    "hidden_size":512,
     "num_head":1,
     "num_layer":2,
     "num_class": 51,
